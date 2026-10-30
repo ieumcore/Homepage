@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AGBS 하드웨어 인터락 작동 다이어그램</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@600;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Pretendard', sans-serif;
+            background-color: #040711;
+            color: #f8fafc;
+            user-select: none;
+        }
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        @keyframes flowFwd {
+            to { stroke-dashoffset: -32; }
+        }
+        @keyframes flowRev {
+            to { stroke-dashoffset: 32; }
+        }
+        .anim-flow-green {
+            stroke-dasharray: 9 5;
+            animation: flowFwd 0.85s linear infinite;
+        }
+        .anim-flow-amber {
+            stroke-dasharray: 9 5;
+            animation: flowFwd 0.85s linear infinite;
+        }
+        .anim-power-red {
+            stroke-dasharray: 7 5;
+            animation: flowFwd 0.9s linear infinite;
+        }
+        .glow-green {
+            filter: drop-shadow(0 0 10px rgba(16, 185, 129, 0.6));
+        }
+        .glow-amber {
+            filter: drop-shadow(0 0 10px rgba(245, 158, 11, 0.6));
+        }
+        .glow-red {
+            filter: drop-shadow(0 0 10px rgba(239, 68, 68, 0.7));
+        }
+    </style>
+</head>
+<body class="h-screen w-screen overflow-hidden flex flex-col bg-[#040711]">
+
+    <!-- Header & Interactive Controls -->
+    <header class="flex-none px-6 py-2.5 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between gap-4 z-20">
+        <div class="flex items-center gap-3">
+            <span class="px-2.5 py-1 bg-red-500/20 border border-red-500/40 text-red-400 text-xs font-black rounded mono flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-red-500 animate-ping"></span>
+                220V HW INTERLOCK
+            </span>
+            <h1 class="text-sm md:text-base font-extrabold text-slate-100 flex items-center gap-2">
+                AGBS 물리 인터락 및 에어갭 작동 토폴로지
+            </h1>
+        </div>
+
+        <!-- Mode Toggle Buttons -->
+        <div class="flex items-center gap-2 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
+            <button id="btnPreJob" onclick="setMode('PRE')" class="px-5 py-1.5 rounded-lg text-xs md:text-sm font-extrabold transition-all flex items-center gap-2 bg-emerald-600 text-slate-950 shadow-lg shadow-emerald-500/30">
+                <span class="w-2.5 h-2.5 rounded-full bg-slate-950"></span>
+                STEP 01. PRE-JOB (사내망 백업)
+            </button>
+            <button id="btnPostJob" onclick="setMode('POST')" class="px-5 py-1.5 rounded-lg text-xs md:text-sm font-bold text-slate-400 hover:text-slate-200 transition-all flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-slate-600"></span>
+                STEP 02. POST-JOB (에어갭 &amp; Pull 복제)
+            </button>
+        </div>
+
+        <!-- Top Dynamic Legend -->
+        <div class="hidden lg:flex items-center gap-4 text-xs font-semibold bg-slate-950/70 px-4 py-1.5 rounded-lg border border-slate-800">
+            <!-- Green: Intranet LAN -->
+            <div id="legendGreen" class="flex items-center gap-2 text-emerald-400 font-bold transition-opacity duration-300">
+                <span class="w-5 h-1 bg-emerald-400 inline-block rounded shadow-sm shadow-emerald-400/50"></span>
+                <span>사내망 LAN 데이터</span>
+            </div>
+            <!-- Amber: Closed Air-Gap Net -->
+            <div id="legendAmber" class="flex items-center gap-2 text-slate-400 font-medium transition-opacity duration-300 opacity-40">
+                <span class="w-5 h-1 bg-amber-400 inline-block rounded shadow-sm shadow-amber-400/50"></span>
+                <span>폐쇄망 Pull 데이터</span>
+            </div>
+            <!-- Red: 220V Power -->
+            <div class="flex items-center gap-2 text-rose-400 font-bold">
+                <span class="w-5 h-1 border-b-2 border-dashed border-red-500 inline-block"></span>
+                <span>220V 전원 제어선</span>
+            </div>
+            <!-- Red X Marker -->
+            <div id="legendAirgap" class="flex items-center gap-1.5 text-rose-400 font-bold opacity-30 transition-opacity duration-300">
+                <span class="text-sm">✕</span>
+                <span>물리 에어갭 단선</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main SVG Canvas (1600x880 Ratio ViewBox, fits 100% viewport without scrollbars) -->
+    <main class="flex-1 w-full h-full relative overflow-hidden flex items-center justify-center p-2 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900/60 via-[#050913] to-[#03060c]">
+        <svg id="topoCanvas" viewBox="0 0 1600 880" class="w-full h-full max-h-full max-w-full" preserveAspectRatio="xMidYMid meet">
+            <defs>
+                <pattern id="gridPat" width="32" height="32" patternUnits="userSpaceOnUse">
+                    <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#1e293b" stroke-width="0.5" stroke-opacity="0.35"/>
+                </pattern>
+
+                <!-- Markers -->
+                <marker id="arrGreen" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#10b981"/>
+                </marker>
+                <marker id="arrAmber" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#f59e0b"/>
+                </marker>
+                <marker id="arrBlue" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#38bdf8"/>
+                </marker>
+                <marker id="arrRedPower" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+                    <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#ef4444"/>
+                </marker>
+            </defs>
+
+            <rect width="1600" height="880" fill="url(#gridPat)"/>
+
+            <!-- ========================================================================= -->
+            <!-- 3 BALANCED ZONES (ZONE 3 HORIZONTAL WIDTH REDUCED)                        -->
+            <!-- ========================================================================= -->
+
+            <!-- ZONE 01: 사내 인트라넷 & 관리 영역 (W: 410) -->
+            <rect x="35" y="30" width="410" height="745" rx="16" fill="#0b1324" fill-opacity="0.65" stroke="#10b981" stroke-width="1.2" stroke-opacity="0.4"/>
+            <text x="55" y="60" fill="#10b981" font-size="12" font-weight="800" class="mono">ZONE 01 // 사내 인트라넷 (INTRANET DOMAIN)</text>
+
+            <!-- ZONE 02: 물리 인터락 스위칭 허브 (W: 550) -->
+            <rect x="470" y="30" width="550" height="745" rx="16" fill="#0b1324" fill-opacity="0.65" stroke="#ef4444" stroke-width="1.2" stroke-opacity="0.4"/>
+            <text x="490" y="60" fill="#f87171" font-size="12" font-weight="800" class="mono">ZONE 02 // 물리 220V 인터락 스위칭 (TIME-DIVISION)</text>
+
+            <!-- ZONE 03: 폐쇄망 격리 스토리지 금고 (W: 520, Reduced Width) -->
+            <rect x="1045" y="30" width="520" height="745" rx="16" fill="#0b1324" fill-opacity="0.65" stroke="#f59e0b" stroke-width="1.2" stroke-opacity="0.4"/>
+            <text x="1065" y="60" fill="#f59e0b" font-size="12" font-weight="800" class="mono">ZONE 03 // 폐쇄망 격리 금고 (AIR-GAP VAULT)</text>
+
+            <!-- ========================================================================= -->
+            <!-- STATIC CONNECTING WIRES                                                   -->
+            <!-- ========================================================================= -->
+
+            <!-- [1] 사내 인트라넷 구름 -> #1 스위치 데이터 LAN선 (GREEN) -->
+            <!-- From Intranet Right (X: 385, Y: 155) -> #1 Switch Left (X: 530, Y: 155) -->
+            <path id="wireIntranetToSwitch1" d="M 385 155 L 530 155" fill="none" stroke="#10b981" stroke-width="4.5" class="anim-flow-green" marker-end="url(#arrGreen)"/>
+
+            <!-- [2] 백업 서버 -> 사내 인트라넷 연동선 (BLUE) -->
+            <path d="M 235 325 L 235 225" fill="none" stroke="#38bdf8" stroke-width="3" stroke-dasharray="6 4" marker-end="url(#arrBlue)"/>
+
+            <!-- [3] 백업 서버 -> AGBS 제어 CLI 명령선 (BLUE) -->
+            <path id="wireApiCommand" d="M 235 425 L 235 550" fill="none" stroke="#38bdf8" stroke-width="3.5" class="anim-flow-green" marker-end="url(#arrBlue)"/>
+
+            <!-- [4] #1 스위치 -> #1 NAS [LAN 1] 백업 데이터선 (GREEN) -->
+            <!-- From #1 Switch Right (X: 890, Y: 155) -> #1 NAS LAN 1 (X: 1100, Y: 155) -->
+            <path id="wireSwitch1ToNas" d="M 890 155 L 1100 155" fill="none" stroke="#10b981" stroke-width="4.5" class="anim-flow-green" marker-end="url(#arrGreen)"/>
+
+            <!-- [5] #1 NAS [LAN 2] -> #2 스위치 (폐쇄망 데이터선 - AMBER) -->
+            <!-- From #1 NAS LAN 2 (X: 1100, Y: 300) -> (X: 970, Y: 300) -> (X: 970, Y: 475) -> #2 Switch Right (X: 890, Y: 475) -->
+            <path id="wireNasToSwitch2" d="M 1100 300 L 970 300 L 970 475 L 890 475" fill="none" stroke="#334155" stroke-width="4.5"/>
+
+            <!-- [6] #2 스위치 -> #2 NAS 데이터선 (폐쇄망 Pull - AMBER) -->
+            <!-- From #2 Switch Right (X: 890, Y: 535) -> #2 NAS Left (X: 1150, Y: 535) -->
+            <path id="wireSwitch2ToNas2" d="M 890 535 L 1150 535" fill="none" stroke="#334155" stroke-width="4.5"/>
+
+            <!-- [7] 220V 전원 제어선 (RED DASHED WIRES) -->
+            <!-- NO 단자 (X: 385, Y: 625) -> #1 스위치 전원 아웃렛 (X: 580, Y: 215) -->
+            <path id="wirePowerNO" d="M 385 625 L 450 625 L 450 240 L 580 240 L 580 218" fill="none" stroke="#ef4444" stroke-width="3" stroke-dasharray="7 5" class="anim-power-red" marker-end="url(#arrRedPower)"/>
+
+            <!-- NC 단자 (X: 385, Y: 680) -> #2 스위치 전원 아웃렛 (X: 580, Y: 535) -->
+            <path id="wirePowerNC" d="M 385 680 L 465 680 L 465 560 L 580 560 L 580 538" fill="none" stroke="#475569" stroke-width="2.5" stroke-dasharray="7 5"/>
+
+            <!-- ========================================================================= -->
+            <!-- ZONE 01 NODES                                                             -->
+            <!-- ========================================================================= -->
+
+            <!-- [1] 인트라넷 (사내 메인 업무 네트워크) -->
+            <g id="nodeIntranet" transform="translate(65, 85)">
+                <rect x="0" y="0" width="320" height="140" rx="16" fill="#072319" stroke="#10b981" stroke-width="2.2" class="glow-green"/>
+                <!-- Cloud Icon SVG inside -->
+                <path d="M 45 68 A 18 18 0 0 1 76 54 A 26 26 0 0 1 120 52 A 20 20 0 0 1 138 72 A 16 16 0 0 1 132 100 L 45 100 A 16 16 0 0 1 45 68 Z" fill="#064e3b" stroke="#34d399" stroke-width="2"/>
+                <text x="155" y="68" fill="#ffffff" font-size="16.5" font-weight="900">사내 인트라넷</text>
+                <text x="155" y="90" fill="#a7f3d0" font-size="12" font-weight="600">업무망 및 백업 트래픽 원천</text>
+                <text x="155" y="108" fill="#34d399" font-size="11" font-weight="700" class="mono">&gt; 192.168.1.0/24 (사내망)</text>
+                <!-- Direct Link Badge -->
+                <rect x="18" y="112" width="284" height="20" rx="4" fill="#064e3b" fill-opacity="0.6"/>
+                <text x="160" y="126" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="800">#1 스위치 데이터 LAN 직결 (백업 경로)</text>
+            </g>
+
+            <!-- [2] 백업 서버 (CLI 스케줄러 탑재) -->
+            <g id="nodeBackupServer" transform="translate(65, 325)">
+                <rect x="0" y="0" width="320" height="100" rx="14" fill="#0f172a" stroke="#334155" stroke-width="1.8"/>
+                <rect x="18" y="24" width="46" height="34" rx="5" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5"/>
+                <line x1="28" y1="46" x2="54" y2="46" stroke="#38bdf8" stroke-width="2"/>
+                <text x="78" y="44" fill="#ffffff" font-size="15" font-weight="800">백업 서버 (운영망)</text>
+                <text x="78" y="64" fill="#94a3b8" font-size="11.5" font-weight="600">스케줄러 자동 백업 트리거</text>
+                <!-- CLI Tool Badge -->
+                <rect x="18" y="69" width="284" height="22" rx="4" fill="#022c22" stroke="#10b981" stroke-width="1"/>
+                <text x="160" y="84" text-anchor="middle" fill="#6ee7b7" font-size="10.5" font-weight="800" class="mono">&gt; AGBS_Client.exe (pre/post 명령)</text>
+            </g>
+
+            <!-- [3] AGBS 제어 컨트롤러 (220V 물리 릴레이 인터락) -->
+            <g id="nodeAGBS" transform="translate(65, 550)">
+                <rect x="0" y="0" width="320" height="185" rx="14" fill="#160808" stroke="#ef4444" stroke-width="2" class="glow-red"/>
+                <rect x="16" y="14" width="288" height="26" rx="6" fill="#450a0a"/>
+                <text x="160" y="31" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="900" class="mono">AGBS HARDWARE INTERLOCK</text>
+                <text x="160" y="58" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="800">220V 전원 인터락 제어기</text>
+                <text x="160" y="76" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="600">데이터 패킷 중계 0% · 물리 전원만 제어</text>
+
+                <!-- Relay Schematic Display -->
+                <rect x="16" y="86" width="288" height="85" rx="8" fill="#030712" stroke="#3f1212" stroke-width="1.2"/>
+                <!-- 220V COM (RED) -->
+                <circle cx="48" cy="128" r="7" fill="#ef4444"/>
+                <text x="48" y="152" text-anchor="middle" fill="#fca5a5" font-size="10" font-weight="900" class="mono">220V</text>
+                
+                <!-- Relay Arm (Rotates dynamically) -->
+                <line id="relayBlade" x1="55" y1="128" x2="200" y2="108" stroke="#ef4444" stroke-width="4.5" stroke-linecap="round" class="glow-red"/>
+
+                <!-- NO Terminal (Top) -->
+                <circle id="circNO" cx="210" cy="108" r="6" fill="#ef4444"/>
+                <rect id="badgeNO" x="225" y="96" width="70" height="24" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="1.2"/>
+                <text x="260" y="112" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="900" class="mono">NO (#1)</text>
+
+                <!-- NC Terminal (Bottom) -->
+                <circle id="circNC" cx="210" cy="148" r="6" fill="#475569"/>
+                <rect id="badgeNC" x="225" y="136" width="70" height="24" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+                <text x="260" y="152" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="800" class="mono">NC (#2)</text>
+            </g>
+
+            <!-- ========================================================================= -->
+            <!-- ZONE 02 NODES (SWITCHES)                                                  -->
+            <!-- ========================================================================= -->
+
+            <!-- [4] #1 네트워크 스위치 (Top) -->
+            <g id="nodeSwitch1" transform="translate(530, 95)">
+                <rect id="boxSwitch1" x="0" y="0" width="360" height="120" rx="14" fill="#064e3b" stroke="#10b981" stroke-width="2.5" class="glow-green"/>
+                <rect x="20" y="20" width="320" height="38" rx="6" fill="#022c22" stroke="#34d399" stroke-width="1.5"/>
+                <!-- Switch Icons -->
+                <path d="M 45 32 L 85 32 M 78 28 L 85 32 L 78 36" stroke="#34d399" stroke-width="2" fill="none"/>
+                <path d="M 85 44 L 45 44 M 52 40 L 45 44 L 52 48" stroke="#34d399" stroke-width="2" fill="none"/>
+                <circle cx="125" cy="38" r="4" fill="#10b981"/>
+                <circle cx="145" cy="38" r="4" fill="#10b981"/>
+                <circle cx="165" cy="38" r="4" fill="#10b981"/>
+                <circle cx="185" cy="38" r="4" fill="#10b981"/>
+
+                <text x="180" y="80" text-anchor="middle" fill="#ffffff" font-size="16.5" font-weight="900">#1 네트워크 스위치 (사내망)</text>
+                <rect id="badgeSwitch1" x="70" y="88" width="220" height="22" rx="5" fill="#ef4444"/>
+                <text id="textSwitch1" x="180" y="103" text-anchor="middle" fill="#ffffff" font-size="11.5" font-weight="900">● 220V 급전 ON (사내망 통전)</text>
+            </g>
+
+            <!-- Physical Air-gap Cut Marker on Switch 1 Line (Hidden in PRE) -->
+            <g id="airgapMarker1" transform="translate(425, 138)" class="hidden glow-red">
+                <rect x="0" y="0" width="80" height="32" rx="6" fill="#450a0a" stroke="#ef4444" stroke-width="2"/>
+                <text x="40" y="21" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="900">✕ AIR-GAP</text>
+            </g>
+
+            <!-- [5] #2 네트워크 스위치 (Bottom) -->
+            <g id="nodeSwitch2" transform="translate(530, 415)">
+                <rect id="boxSwitch2" x="0" y="0" width="360" height="120" rx="14" fill="#0f172a" stroke="#475569" stroke-width="2" stroke-dasharray="6 4" opacity="0.5"/>
+                <rect x="20" y="20" width="320" height="38" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.2"/>
+                <path d="M 45 32 L 85 32 M 85 44 L 45 44" stroke="#475569" stroke-width="2" fill="none"/>
+                <circle cx="125" cy="38" r="4" fill="#334155"/>
+                <circle cx="145" cy="38" r="4" fill="#334155"/>
+
+                <text x="180" y="80" text-anchor="middle" fill="#94a3b8" font-size="16.5" font-weight="900">#2 네트워크 스위치 (폐쇄망)</text>
+                <rect id="badgeSwitch2" x="70" y="88" width="220" height="22" rx="5" fill="#1e293b" stroke="#475569" stroke-width="1.2"/>
+                <text id="textSwitch2" x="180" y="103" text-anchor="middle" fill="#94a3b8" font-size="11.5" font-weight="800">✕ 220V 전원 차단 (물리 격리)</text>
+            </g>
+
+            <!-- ========================================================================= -->
+            <!-- ZONE 03 NODES (NAS STORAGES - REDUCED COMPACT WIDTH)                      -->
+            <!-- ========================================================================= -->
+
+            <!-- [6] #1 NAS (듀얼 LAN 인터페이스 백업 스토리지) -->
+            <g id="nodeNas1" transform="translate(1100, 95)">
+                <rect id="boxNas1" x="0" y="0" width="205" height="240" rx="14" fill="#072319" stroke="#10b981" stroke-width="2.5" class="glow-green"/>
+                <rect x="14" y="14" width="177" height="24" rx="5" fill="#064e3b"/>
+                <text x="102" y="30" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="800">공유 접점 백업 스토리지</text>
+
+                <!-- LAN 1 Port (Top) -->
+                <rect id="badgeNasLan1" x="14" y="46" width="177" height="28" rx="6" fill="#10b981"/>
+                <text id="textNasLan1" x="102" y="65" text-anchor="middle" fill="#022c22" font-size="11.5" font-weight="900" class="mono">[LAN 1] 사내망 포트 ON</text>
+
+                <!-- NAS Icon Graphic -->
+                <rect x="37" y="84" width="130" height="70" rx="8" fill="#0f172a" stroke="#10b981" stroke-width="1.5"/>
+                <line x1="50" y1="102" x2="154" y2="102" stroke="#34d399" stroke-width="1.5"/>
+                <circle cx="62" cy="116" r="3" fill="#10b981"/>
+                <circle cx="72" cy="116" r="3" fill="#10b981"/>
+                <line x1="50" y1="130" x2="154" y2="130" stroke="#34d399" stroke-width="1.5"/>
+                <circle cx="62" cy="144" r="3" fill="#10b981"/>
+                <circle cx="72" cy="144" r="3" fill="#10b981"/>
+
+                <text x="102" y="174" text-anchor="middle" fill="#ffffff" font-size="15.5" font-weight="900">#1 NAS (운영 백업)</text>
+
+                <!-- LAN 2 Port (Bottom) -->
+                <rect id="badgeNasLan2" x="14" y="194" width="177" height="28" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.2"/>
+                <text id="textNasLan2" x="102" y="213" text-anchor="middle" fill="#94a3b8" font-size="11.5" font-weight="800" class="mono">[LAN 2] 폐쇄망 대기 (OFF)</text>
+            </g>
+
+            <!-- [7] #2 NAS (폐쇄망 격리 안전 금고) -->
+            <g id="nodeNas2" transform="translate(1150, 415)">
+                <rect id="boxNas2" x="0" y="0" width="225" height="240" rx="14" fill="#0f172a" stroke="#475569" stroke-width="2" opacity="0.5"/>
+                <rect x="14" y="14" width="197" height="24" rx="5" fill="#1e293b"/>
+                <text x="112" y="30" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="800">최종 오프라인 금고 스토리지</text>
+
+                <!-- Status Badge -->
+                <rect id="badgeNas2Status" x="14" y="46" width="197" height="28" rx="6" fill="#1e293b" stroke="#475569" stroke-width="1.2"/>
+                <text id="textNas2Status" x="112" y="65" text-anchor="middle" fill="#94a3b8" font-size="11.5" font-weight="800">오프라인 안전 격리 대기</text>
+
+                <!-- Safe Vault Graphic Icon -->
+                <rect x="47" y="84" width="130" height="70" rx="8" fill="#1e293b" stroke="#64748b" stroke-width="1.5"/>
+                <circle cx="112" cy="119" r="16" fill="none" stroke="#94a3b8" stroke-width="2.5"/>
+                <circle cx="112" cy="119" r="4" fill="#94a3b8"/>
+                <line x1="112" y1="103" x2="112" y2="109" stroke="#94a3b8" stroke-width="2.5"/>
+                <line x1="112" y1="129" x2="112" y2="135" stroke="#94a3b8" stroke-width="2.5"/>
+                <line x1="96" y1="119" x2="102" y2="119" stroke="#94a3b8" stroke-width="2.5"/>
+                <line x1="122" y1="119" x2="128" y2="119" stroke="#94a3b8" stroke-width="2.5"/>
+
+                <text x="112" y="174" text-anchor="middle" fill="#ffffff" font-size="15.5" font-weight="900">#2 NAS (격리 금고)</text>
+                <text id="subtextNas2" x="112" y="200" text-anchor="middle" fill="#64748b" font-size="11.5" font-weight="600">스위치 전원 차단으로 완전 격리</text>
+            </g>
+
+            <!-- Line Badges & Power Labels (RED) -->
+            <!-- Label for #1 Switch 220V Power Line -->
+            <g id="badgePowerNO" transform="translate(470, 230)">
+                <rect x="0" y="0" width="105" height="22" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="1.2"/>
+                <text x="52.5" y="15" text-anchor="middle" fill="#fca5a5" font-size="10.5" font-weight="900">⚡ 220V 통전</text>
+            </g>
+
+            <!-- Label for #2 Switch 220V Power Line -->
+            <g id="badgePowerNC" transform="translate(470, 550)">
+                <rect x="0" y="0" width="105" height="22" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+                <text x="52.5" y="15" text-anchor="middle" fill="#94a3b8" font-size="10.5" font-weight="800">⚡ 0V 전원차단</text>
+            </g>
+
+            <!-- Bottom Floating Summary Banner -->
+            <g transform="translate(35, 792)">
+                <rect x="0" y="0" width="1530" height="62" rx="12" fill="#0b1324" stroke="#1e293b" stroke-width="1.5"/>
+                <circle cx="28" cy="31" r="5" fill="#10b981"/>
+                <text id="summaryText" x="45" y="36" fill="#f8fafc" font-size="14" font-weight="800">
+                    [PRE-JOB 상태] 사내망 백업 진행 : <tspan fill="#fca5a5" font-weight="900">#1 스위치 220V 통전(NO 연결)</tspan>으로 백업 데이터를 #1 NAS에 저장. <tspan fill="#94a3b8">#2 스위치는 0V 완전 차단</tspan>되어 최종 금고(#2 NAS)는 물리적으로 단절되어 있습니다.
+                </text>
+                <rect x="1275" y="15" width="230" height="32" rx="6" fill="#0f172a" stroke="#ef4444" stroke-width="1.2"/>
+                <text x="1390" y="35" text-anchor="middle" fill="#f87171" font-size="11.5" font-weight="900" class="mono">동시 통전 확률 물리적 0.0%</text>
+            </g>
+
+        </svg>
+    </main>
+
+    <script>
+        let currentMode = 'PRE';
+
+        function setMode(mode) {
+            currentMode = mode;
+
+            // Controls & Legends
+            const btnPre = document.getElementById('btnPreJob');
+            const btnPost = document.getElementById('btnPostJob');
+            const legendGreen = document.getElementById('legendGreen');
+            const legendAmber = document.getElementById('legendAmber');
+            const legendAirgap = document.getElementById('legendAirgap');
+
+            // Wires
+            const wireIntranet = document.getElementById('wireIntranetToSwitch1');
+            const wireSwitch1Nas = document.getElementById('wireSwitch1ToNas');
+            const wireNasSwitch2 = document.getElementById('wireNasToSwitch2');
+            const wireSwitch2Nas2 = document.getElementById('wireSwitch2ToNas2');
+            const wirePowerNO = document.getElementById('wirePowerNO');
+            const wirePowerNC = document.getElementById('wirePowerNC');
+
+            // Relay Internal Elements
+            const relayBlade = document.getElementById('relayBlade');
+            const circNO = document.getElementById('circNO');
+            const circNC = document.getElementById('circNC');
+            const badgeNO = document.getElementById('badgeNO');
+            const badgeNC = document.getElementById('badgeNC');
+
+            // Switches
+            const boxSwitch1 = document.getElementById('boxSwitch1');
+            const badgeSwitch1 = document.getElementById('badgeSwitch1');
+            const textSwitch1 = document.getElementById('textSwitch1');
+            const airgapMarker1 = document.getElementById('airgapMarker1');
+
+            const boxSwitch2 = document.getElementById('boxSwitch2');
+            const badgeSwitch2 = document.getElementById('badgeSwitch2');
+            const textSwitch2 = document.getElementById('textSwitch2');
+
+            // NAS Storages
+            const boxNas1 = document.getElementById('boxNas1');
+            const badgeNasLan1 = document.getElementById('badgeNasLan1');
+            const textNasLan1 = document.getElementById('textNasLan1');
+            const badgeNasLan2 = document.getElementById('badgeNasLan2');
+            const textNasLan2 = document.getElementById('textNasLan2');
+
+            const boxNas2 = document.getElementById('boxNas2');
+            const badgeNas2Status = document.getElementById('badgeNas2Status');
+            const textNas2Status = document.getElementById('textNas2Status');
+            const subtextNas2 = document.getElementById('subtextNas2');
+
+            // Badges & Summary Text
+            const badgePowerNO = document.getElementById('badgePowerNO');
+            const badgePowerNC = document.getElementById('badgePowerNC');
+            const summaryText = document.getElementById('summaryText');
+
+            if (mode === 'PRE') {
+                // Button Styles
+                btnPre.className = "px-5 py-1.5 rounded-lg text-xs md:text-sm font-extrabold transition-all flex items-center gap-2 bg-emerald-600 text-slate-950 shadow-lg shadow-emerald-500/30";
+                btnPost.className = "px-5 py-1.5 rounded-lg text-xs md:text-sm font-bold text-slate-400 hover:text-slate-200 transition-all flex items-center gap-2";
+
+                // Dynamic Legend Sync
+                legendGreen.className = "flex items-center gap-2 text-emerald-400 font-bold transition-opacity duration-300 opacity-100";
+                legendAmber.className = "flex items-center gap-2 text-slate-400 font-medium transition-opacity duration-300 opacity-30";
+                legendAirgap.className = "flex items-center gap-1.5 text-rose-400 font-bold opacity-20 transition-opacity duration-300";
+
+                // Relay Arm: Point to NO (Top Y=108, RED 220V)
+                relayBlade.setAttribute('y2', '108');
+                relayBlade.setAttribute('stroke', '#ef4444');
+                circNO.setAttribute('fill', '#ef4444');
+                circNC.setAttribute('fill', '#475569');
+                badgeNO.setAttribute('fill', '#450a0a');
+                badgeNO.setAttribute('stroke', '#ef4444');
+                badgeNC.setAttribute('fill', '#1e293b');
+                badgeNC.setAttribute('stroke', '#475569');
+
+                // 220V RED Power Lines
+                wirePowerNO.setAttribute('stroke', '#ef4444');
+                wirePowerNO.setAttribute('stroke-width', '3');
+                wirePowerNO.classList.add('anim-power-red');
+                badgePowerNO.innerHTML = `<rect x="0" y="0" width="105" height="22" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="1.2"/><text x="52.5" y="15" text-anchor="middle" fill="#fca5a5" font-size="10.5" font-weight="900">⚡ 220V 통전</text>`;
+
+                wirePowerNC.setAttribute('stroke', '#475569');
+                wirePowerNC.setAttribute('stroke-width', '2.5');
+                wirePowerNC.classList.remove('anim-power-red');
+                badgePowerNC.innerHTML = `<rect x="0" y="0" width="105" height="22" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/><text x="52.5" y="15" text-anchor="middle" fill="#94a3b8" font-size="10.5" font-weight="800">⚡ 0V 전원차단</text>`;
+
+                // #1 Switch ON (Green Glow)
+                boxSwitch1.setAttribute('fill', '#064e3b');
+                boxSwitch1.setAttribute('stroke', '#10b981');
+                boxSwitch1.setAttribute('stroke-dasharray', 'none');
+                boxSwitch1.setAttribute('opacity', '1');
+                boxSwitch1.classList.add('glow-green');
+                badgeSwitch1.setAttribute('fill', '#ef4444');
+                badgeSwitch1.removeAttribute('stroke');
+                textSwitch1.setAttribute('fill', '#ffffff');
+                textSwitch1.textContent = "● 220V 급전 ON (사내망 통전)";
+                airgapMarker1.classList.add('hidden');
+
+                // Intranet LAN Data Lines ACTIVE (Green)
+                wireIntranet.setAttribute('stroke', '#10b981');
+                wireIntranet.classList.add('anim-flow-green');
+                wireSwitch1Nas.setAttribute('stroke', '#10b981');
+                wireSwitch1Nas.classList.add('anim-flow-green');
+
+                // #2 Switch OFF (Dimmed)
+                boxSwitch2.setAttribute('fill', '#0f172a');
+                boxSwitch2.setAttribute('stroke', '#475569');
+                boxSwitch2.setAttribute('stroke-dasharray', '6 4');
+                boxSwitch2.setAttribute('opacity', '0.5');
+                boxSwitch2.classList.remove('glow-amber');
+                badgeSwitch2.setAttribute('fill', '#1e293b');
+                badgeSwitch2.setAttribute('stroke', '#475569');
+                textSwitch2.setAttribute('fill', '#94a3b8');
+                textSwitch2.textContent = "✕ 220V 전원 차단 (물리 격리)";
+
+                // Closed Net Data Lines INACTIVE
+                wireNasSwitch2.setAttribute('stroke', '#334155');
+                wireNasSwitch2.classList.remove('anim-flow-amber');
+                wireNasSwitch2.removeAttribute('marker-end');
+                wireSwitch2Nas2.setAttribute('stroke', '#334155');
+                wireSwitch2Nas2.classList.remove('anim-flow-amber');
+                wireSwitch2Nas2.removeAttribute('marker-end');
+
+                // #1 NAS LAN 1 ON, LAN 2 OFF
+                boxNas1.setAttribute('stroke', '#10b981');
+                boxNas1.classList.add('glow-green');
+                badgeNasLan1.setAttribute('fill', '#10b981');
+                textNasLan1.setAttribute('fill', '#022c22');
+                textNasLan1.textContent = "[LAN 1] 사내망 포트 ON";
+                badgeNasLan2.setAttribute('fill', '#1e293b');
+                badgeNasLan2.setAttribute('stroke', '#475569');
+                textNasLan2.setAttribute('fill', '#94a3b8');
+                textNasLan2.textContent = "[LAN 2] 폐쇄망 대기 (OFF)";
+
+                // #2 NAS OFF/Idle
+                boxNas2.setAttribute('opacity', '0.5');
+                boxNas2.setAttribute('stroke', '#475569');
+                boxNas2.classList.remove('glow-amber');
+                badgeNas2Status.setAttribute('fill', '#1e293b');
+                badgeNas2Status.setAttribute('stroke', '#475569');
+                textNas2Status.setAttribute('fill', '#94a3b8');
+                textNas2Status.textContent = "오프라인 안전 격리 대기";
+                subtextNas2.textContent = "스위치 전원 차단으로 완전 격리";
+
+                // Summary Banner
+                summaryText.innerHTML = `[PRE-JOB 상태] 사내망 백업 진행 : <tspan fill="#fca5a5" font-weight="900">#1 스위치 220V 통전(NO 연결)</tspan>으로 백업 데이터를 #1 NAS에 저장. <tspan fill="#94a3b8">#2 스위치는 0V 완전 차단</tspan>되어 최종 금고(#2 NAS)는 물리적으로 단절되어 있습니다.`;
+
+            } else {
+                // Button Styles
+                btnPre.className = "px-5 py-1.5 rounded-lg text-xs md:text-sm font-bold text-slate-400 hover:text-slate-200 transition-all flex items-center gap-2";
+                btnPost.className = "px-5 py-1.5 rounded-lg text-xs md:text-sm font-extrabold transition-all flex items-center gap-2 bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/30";
+
+                // Dynamic Legend Sync
+                legendGreen.className = "flex items-center gap-2 text-slate-400 font-medium transition-opacity duration-300 opacity-30";
+                legendAmber.className = "flex items-center gap-2 text-amber-400 font-bold transition-opacity duration-300 opacity-100";
+                legendAirgap.className = "flex items-center gap-1.5 text-rose-400 font-bold opacity-100 transition-opacity duration-300";
+
+                // Relay Arm: Point to NC (Bottom Y=148, RED 220V)
+                relayBlade.setAttribute('y2', '148');
+                relayBlade.setAttribute('stroke', '#ef4444');
+                circNO.setAttribute('fill', '#475569');
+                circNC.setAttribute('fill', '#ef4444');
+                badgeNO.setAttribute('fill', '#1e293b');
+                badgeNO.setAttribute('stroke', '#475569');
+                badgeNC.setAttribute('fill', '#450a0a');
+                badgeNC.setAttribute('stroke', '#ef4444');
+
+                // 220V RED Power Lines
+                wirePowerNO.setAttribute('stroke', '#475569');
+                wirePowerNO.setAttribute('stroke-width', '2.5');
+                wirePowerNO.classList.remove('anim-power-red');
+                badgePowerNO.innerHTML = `<rect x="0" y="0" width="105" height="22" rx="4" fill="#1e293b" stroke="#475569" stroke-width="1"/><text x="52.5" y="15" text-anchor="middle" fill="#94a3b8" font-size="10.5" font-weight="800">⚡ 0V 전원차단</text>`;
+
+                wirePowerNC.setAttribute('stroke', '#ef4444');
+                wirePowerNC.setAttribute('stroke-width', '3');
+                wirePowerNC.classList.add('anim-power-red');
+                badgePowerNC.innerHTML = `<rect x="0" y="0" width="105" height="22" rx="4" fill="#450a0a" stroke="#ef4444" stroke-width="1.2"/><text x="52.5" y="15" text-anchor="middle" fill="#fca5a5" font-size="10.5" font-weight="900">⚡ 220V 통전</text>`;
+
+                // #1 Switch OFF (Physical Air-Gap Disconnect)
+                boxSwitch1.setAttribute('fill', '#0f172a');
+                boxSwitch1.setAttribute('stroke', '#475569');
+                boxSwitch1.setAttribute('stroke-dasharray', '6 4');
+                boxSwitch1.setAttribute('opacity', '0.5');
+                boxSwitch1.classList.remove('glow-green');
+                badgeSwitch1.setAttribute('fill', '#1e293b');
+                badgeSwitch1.setAttribute('stroke', '#475569');
+                badgeSwitch1.setAttribute('stroke-width', '1.2');
+                textSwitch1.setAttribute('fill', '#94a3b8');
+                textSwitch1.textContent = "✕ 220V 전원 차단 (물리 단선)";
+                airgapMarker1.classList.remove('hidden');
+
+                // Intranet Data Lines Disconnected (Grayed)
+                wireIntranet.setAttribute('stroke', '#334155');
+                wireIntranet.classList.remove('anim-flow-green');
+                wireSwitch1Nas.setAttribute('stroke', '#334155');
+                wireSwitch1Nas.classList.remove('anim-flow-green');
+
+                // #2 Switch ON (Amber Glow - Closed Net)
+                boxSwitch2.setAttribute('fill', '#451a03');
+                boxSwitch2.setAttribute('stroke', '#f59e0b');
+                boxSwitch2.setAttribute('stroke-dasharray', 'none');
+                boxSwitch2.setAttribute('opacity', '1');
+                boxSwitch2.classList.add('glow-amber');
+                badgeSwitch2.setAttribute('fill', '#ef4444');
+                badgeSwitch2.removeAttribute('stroke');
+                textSwitch2.setAttribute('fill', '#ffffff');
+                textSwitch2.textContent = "● 220V 급전 ON (폐쇄망 개통)";
+
+                // Closed Net Data Lines ACTIVE (PULL FLOW - Amber)
+                wireNasSwitch2.setAttribute('stroke', '#f59e0b');
+                wireNasSwitch2.classList.add('anim-flow-amber');
+                wireSwitch2Nas2.setAttribute('stroke', '#f59e0b');
+                wireSwitch2Nas2.classList.add('anim-flow-amber');
+                wireSwitch2Nas2.setAttribute('marker-end', 'url(#arrAmber)');
+
+                // #1 NAS LAN 1 OFF, LAN 2 ON
+                boxNas1.setAttribute('stroke', '#f59e0b');
+                boxNas1.classList.remove('glow-green');
+                boxNas1.classList.add('glow-amber');
+                badgeNasLan1.setAttribute('fill', '#1e293b');
+                badgeNasLan1.setAttribute('stroke', '#ef4444');
+                textNasLan1.setAttribute('fill', '#fca5a5');
+                textNasLan1.textContent = "[LAN 1] 물리 에어갭 단선";
+                badgeNasLan2.setAttribute('fill', '#f59e0b');
+                badgeNasLan2.setAttribute('stroke', '#f59e0b');
+                textNasLan2.setAttribute('fill', '#271202');
+                textNasLan2.textContent = "[LAN 2] 폐쇄망 포트 ON";
+
+                // #2 NAS Active Pull
+                boxNas2.setAttribute('opacity', '1');
+                boxNas2.setAttribute('stroke', '#f59e0b');
+                boxNas2.classList.add('glow-amber');
+                badgeNas2Status.setAttribute('fill', '#f59e0b');
+                badgeNas2Status.setAttribute('stroke', '#f59e0b');
+                textNas2Status.setAttribute('fill', '#271202');
+                textNas2Status.textContent = "★ 능동적 Pull 복제 수행 중";
+                subtextNas2.textContent = "#2 NAS 주도로 #1 NAS 데이터 흡수";
+
+                // Summary Banner
+                summaryText.innerHTML = `[POST-JOB 상태] 물리 에어갭 &amp; 능동 복제 : <tspan fill="#fca5a5" font-weight="900">#1 스위치 220V 차단(물리적 망분리)</tspan> 완료. <tspan fill="#fbbf24" font-weight="900">#2 스위치 220V 급전(NC 복귀)</tspan>으로 #2 NAS가 주도하는 Active Pull 복제를 수행합니다.`;
+            }
+        }
+
+        // Keyboard Shortcuts (1: PRE, 2: POST)
+        window.addEventListener('keydown', (e) => {
+            if (e.key === '1') setMode('PRE');
+            if (e.key === '2') setMode('POST');
+        });
+    </script>
+</body>
+</html>
